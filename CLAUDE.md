@@ -81,6 +81,9 @@ needs a secure context (`python3 -m http.server 8123`).
 - `onMiss(ex)` — fires when an expected grid point passes unclaimed: HUD "MISS", red ✕,
   counts as a bad result.
 - `updateStats()` — refreshes the good/missed/average line in the HUD.
+- `updateStreaks()` — refreshes the streak line in the HUD: current and best consecutive
+  good-or-better claps, and current/best great-only claps (a miss or off-grid clap resets
+  both; a merely good clap resets the great streak).
 
 ### Modes & levels
 - `getSubDiv()` — current radio selection (2 = eighths, 3 = triplets), read live.
@@ -97,7 +100,9 @@ needs a secure context (`python3 -m http.server 8123`).
 ### Rendering
 - `resize()` — sizes the canvas to the window with devicePixelRatio scaling.
 - `drawViz()` — per-frame loop: advances miss detection, draws clap ticks, miss ✕s,
-  subdivision notes, main beats, target line, mode banner; calls `drawChart`.
+  subdivision notes, main beats, target line, mode banner; calls `drawChart`. During the
+  count-in it pulses a big "QUIET! CALIBRATING!" warning (clapping there would pollute
+  the latency measurement).
 - `drawChart(now)` — bottom strip: 60 s of offset dots, miss marks, ±50 ms band, EWMA line.
 - `drawDetChart(now)` — detection strip above it: 12 s of worklet telemetry (mic peak,
   env ×4 threshold, sensitivity floor, green detection ticks), sqrt-scaled.
