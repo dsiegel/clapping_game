@@ -1,0 +1,848 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clap Trainer</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, system-ui, sans-serif;
+    background: #111;
+    color: #eee;
+    margin: 0;
+    overflow: hidden;
+  }
+  #viz { position: fixed; inset: 0; display: block; }
+
+  #panel {
+    position: fixed;
+    left: 12px;
+    top: 12px;
+    z-index: 10;
+    display: flex;
+    flex-direction: column;
+    gap: 0.7rem;
+    width: 230px;
+    padding: 1rem;
+    background: rgba(24, 24, 24, 0.88);
+    border: 1px solid #333;
+    border-radius: 12px;
+  }
+  #panel h1 { margin: 0; font-size: 1.1rem; }
+  #panel label { font-size: 0.85rem; display: block; }
+  #panel input[type=range] { width: 100%; }
+  button {
+    font-size: 1.1rem;
+    padding: 0.5rem 1rem;
+    border-radius: 8px;
+    border: none;
+    background: #2d7;
+    color: #000;
+    cursor: pointer;
+  }
+  button.stop { background: #d55; }
+  button:disabled { opacity: 0.4; cursor: default; }
+  #levels { display: flex; flex-direction: column; gap: 2px; }
+  .lvl {
+    padding: 2px 6px;
+    border-radius: 6px;
+    border: 1px solid transparent;
+  }
+  .lvl.current {
+    background: rgba(34, 221, 119, 0.15);
+    border-color: #2d7;
+    color: #2d7;
+  }
+  #hint { color: #777; font-size: 0.72rem; margin: 0; }
+
+  #hud {
+    position: fixed;
+    top: 14px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 5;
+    text-align: center;
+    pointer-events: none;
+  }
+  #modeBanner {
+    font-size: 1.6rem;
+    font-weight: bold;
+    letter-spacing: 0.1em;
+    color: #ccc;
+    height: 2rem;
+    transition: color 0.15s, transform 0.15s;
+  }
+  #modeBanner.flash { color: #fd4; transform: scale(1.15); }
+  #levelEl { color: #8a8; font-size: 0.9rem; height: 1.2rem; }
+  #levelEl.flash { color: #fd4; }
+  #verdict { font-size: 2rem; font-weight: bold; height: 2.4rem; line-height: 2.4rem; }
+  #verdict.early { color: #5af; }
+  #verdict.late  { color: #fa5; }
+  #verdict.good  { color: #2d7; }
+  #verdict.great { color: #fd4; }
+  #verdict.miss  { color: #d55; }
+  #detail { color: #999; height: 1.2rem; }
+  #stats { color: #999; font-size: 0.9rem; }
+</style>
+</head>
+<body>
+  <canvas id="viz"></canvas>
+
+  <div id="hud">
+    <div id="modeBanner"></div>
+    <div id="levelEl"></div>
+    <div id="verdict"></div>
+    <div id="detail"></div>
+    <div id="stats"></div>
+  </div>
+
+  <div id="panel">
+    <h1>👏 Clap Trainer</h1>
+    <label>BPM <input type="number" id="bpm" value="57" min="40" max="160" style="width:4.5rem"></label>
+    <label><input type="radio" name="mode" value="2" checked> Eighth notes (1 &amp; 2 &amp;)</label>
+    <label><input type="radio" name="mode" value="3"> Triplets (1-trip-let 2-trip-let)</label>
+    <div id="levels">
+      <div style="font-size:0.85rem; margin-bottom:2px">Levels</div>
+      <label class="lvl" data-lvl="1"><input type="checkbox" checked> 1 · all notes shown</label>
+      <label class="lvl" data-lvl="2"><input type="checkbox" checked> 2 · subdivisions hidden</label>
+      <label class="lvl" data-lvl="3"><input type="checkbox" checked> 3 · beats hidden</label>
+      <label class="lvl" data-lvl="4"><input type="checkbox" checked> 4 · random mode switches</label>
+    </div>
+    <label>Mic sensitivity <input type="range" id="sens" min="0.01" max="0.2" step="0.005" value="0.17"></label>
+    <button id="startBtn">Start</button>
+    <p id="hint">Notes cross the green line exactly on the beat — clap so your tick lands on the
+    note. Keep scoring green and the game levels up: first the small in-between notes disappear,
+    then the beats themselves, then the mode starts switching randomly at the top of each measure
+    (watch the banner). Slip up and you drop a level. If claps aren't registering, drag
+    sensitivity right. First 4 beats are a count-in — stay quiet during it: the app listens to
+    its own clicks to measure your audio latency. Green = within ±50 ms, gold = within ±20 ms.</p>
+  </div>
+
+<script>
+let ctx, micStream, detector;
+let micLatency = 0;      // input latency reported by the mic track, seconds
+let latSamples = [];     // count-in loopback measurements of true round-trip latency
+let measuredLat = null;  // median of latSamples; overrides the browser's estimates
+let state = 'idle';      // 'idle' | 'playing'
+let startAt = 0;         // audioContext time of the first count-in beat
+let t0 = 0;              // audioContext time of beat "1" after count-in
+const countInBeats = 4;
+let beatDur = 60 / 57;   // seconds per beat
+let offsets = [];        // ms offsets for stats
+let claps = [];          // {time, cls} for the falling display
+let expected = [];       // {time, grid, hit} upcoming grid points, filled by the scheduler
+let missMarks = [];      // {time} of missed grid points
+let misses = 0;
+let history = [];        // {t, off, cls, ewma} for the bottom chart
+const CHART_SPAN = 60;   // seconds of history shown
+const CHART_MAX = 150;   // ms offset at chart edge (clamped)
+const EWMA_A = 0.25;
+let detLevels = [];      // {t, peak, env} telemetry from the worklet for the detection chart
+let detTicks = [];       // times the detector fired
+const DET_SPAN = 12;     // seconds shown in the detection chart
+
+// --- level progression ---
+// 1: all notes shown · 2: subdivisions hidden · 3: beats hidden · 4: random mode switches
+let level = 1;
+let recent = [];         // rolling window of good/bad results
+const WINDOW = 12, PROMOTE_AT = 10, DEMOTE_AT = 6;
+const LEVEL_DESC = {
+  1: 'all notes shown',
+  2: 'subdivisions hidden',
+  3: 'beats hidden',
+  4: 'random mode switches!'
+};
+let randModes = [];      // level 4: subdivision (2|3) chosen per measure, decided at the "1"
+let bannerMode = 0;
+
+const verdictEl = document.getElementById('verdict');
+const detailEl = document.getElementById('detail');
+const statsEl = document.getElementById('stats');
+const modeEl = document.getElementById('modeBanner');
+const levelEl = document.getElementById('levelEl');
+const startBtn = document.getElementById('startBtn');
+const sensEl = document.getElementById('sens');
+const cv = document.getElementById('viz');
+const g2 = cv.getContext('2d');
+
+const CLAP_COLORS = { great: '#fd4', good: '#2d7', early: '#5af', late: '#fa5' };
+
+let W = 0, H = 0;
+function resize() {
+  const dpr = window.devicePixelRatio || 1;
+  W = window.innerWidth;
+  H = window.innerHeight;
+  cv.width = W * dpr;
+  cv.height = H * dpr;
+  cv.style.width = W + 'px';   // without this the bitmap size becomes the
+  cv.style.height = H + 'px';  // display size and everything renders offscreen on retina
+  g2.setTransform(dpr, 0, 0, dpr, 0, 0);
+  if (state !== 'playing') drawIdle();
+}
+window.addEventListener('resize', resize);
+resize();
+
+startBtn.onclick = () => state === 'playing' ? stop() : start();
+sensEl.oninput = sendFloor;
+
+function getSubDiv() {
+  return +document.querySelector('input[name=mode]:checked').value;
+}
+
+const measDur = () => 4 * beatDur;
+
+// Which subdivision applies to measure n (0 = first measure after count-in).
+// Below level 4 it's the user's radio choice; at level 4 each measure gets a
+// random mode, decided once and remembered so drawing and scoring agree.
+function modeForMeasure(n) {
+  if (!effectActive(4)) return getSubDiv();
+  if (randModes[n] === undefined) randModes[n] = Math.random() < 0.5 ? 2 : 3;
+  return randModes[n];
+}
+
+// --- level enable/disable checkboxes ---
+const lvlBoxes = [...document.querySelectorAll('#levels input')]; // index i → level i+1
+
+function enabledLevels() {
+  const on = lvlBoxes.map((b, i) => b.checked ? i + 1 : null).filter(Boolean);
+  return on.length ? on : [1]; // all unchecked → behave like level 1 only
+}
+
+// levels stack: a level's effect (hide subdivisions / hide beats / random modes)
+// applies only when that level is enabled AND reached — so with level 3 unchecked,
+// level 4 randomizes modes but the beats stay visible
+function effectActive(l) {
+  return level >= l && enabledLevels().includes(l);
+}
+
+function setLevel(l, flash) {
+  const entering4 = l >= 4 && level < 4;
+  level = l;
+  recent = [];
+  if (entering4 && state === 'playing') {
+    // lock the in-progress measure to the practiced mode so the first
+    // random switch can only happen on a "1"
+    const n = Math.max(0, Math.floor((ctx.currentTime - t0) / measDur()));
+    randModes[n] = getSubDiv();
+  }
+  updateLevelHUD(flash);
+}
+
+lvlBoxes.forEach(b => b.addEventListener('change', () => {
+  if (state === 'playing' && !enabledLevels().includes(level)) {
+    // current level was just disabled — snap to nearest enabled (prefer lower)
+    const on = enabledLevels();
+    const lower = on.filter(l => l < level);
+    setLevel(lower.length ? lower[lower.length - 1] : on[0], true);
+  } else {
+    updateLevelHUD(false);
+  }
+}));
+
+function updateLevelHUD(flash) {
+  levelEl.textContent = state === 'playing' ? `Level ${level} · ${LEVEL_DESC[level]}` : '';
+  document.querySelectorAll('.lvl').forEach(el =>
+    el.classList.toggle('current', state === 'playing' && +el.dataset.lvl === level));
+  if (flash) {
+    levelEl.classList.add('flash');
+    setTimeout(() => levelEl.classList.remove('flash'), 1200);
+  }
+}
+
+// Clap detection runs in an AudioWorklet (off the main thread, so canvas jank
+// can't delay or drop mic buffers). A clap is detected as a transient: the
+// block's peak must clear an absolute floor AND jump well above a peak-hold
+// envelope of the recent signal level. Detected peaks (clap tails included)
+// feed the envelope, so a clap's decay and steady background noise can't
+// re-trigger; a 120 ms refractory period guards the rest.
+const WORKLET_CODE = `
+class ClapDetector extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    this.env = 0;        // peak-hold envelope, exponential decay (~40 ms time constant)
+    this.lastClap = -1;
+    this.floor = 0.04;
+    this.accPeak = 0;    // level telemetry for the debug chart, batched ~8 blocks (~20 ms)
+    this.nAcc = 0;
+    this.port.onmessage = e => { this.floor = e.data.floor; };
+  }
+  process(inputs) {
+    const ch = inputs[0][0];
+    if (!ch) return true;
+    let peak = 0, peakIdx = 0;
+    for (let i = 0; i < ch.length; i++) {
+      const a = ch[i] < 0 ? -ch[i] : ch[i];
+      if (a > peak) { peak = a; peakIdx = i; }
+    }
+    const t = currentTime + peakIdx / sampleRate;
+    if (peak > this.floor && peak > this.env * 4 && t - this.lastClap > 0.12) {
+      this.lastClap = t;
+      this.port.postMessage({ type: 'clap', t });
+    }
+    if (peak > this.accPeak) this.accPeak = peak;
+    if (++this.nAcc >= 8) {
+      this.port.postMessage({ type: 'lvl', t: currentTime, peak: this.accPeak, env: this.env });
+      this.accPeak = 0;
+      this.nAcc = 0;
+    }
+    this.env = Math.max(peak, this.env * Math.exp(-ch.length / sampleRate / 0.04));
+    return true;
+  }
+}
+registerProcessor('clap-detector', ClapDetector);
+`;
+
+// a data: URL, not a Blob URL — Chrome rejects blob: worklet modules on file://
+async function loadWorklet() {
+  try {
+    await ctx.audioWorklet.addModule(
+      'data:application/javascript;charset=utf-8,' + encodeURIComponent(WORKLET_CODE));
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+async function ensureAudio() {
+  if (ctx && ctx.state !== 'closed') {
+    // reuse the existing mic + graph (stop() only suspends, so Start never
+    // has to re-request mic permission within a page load)
+    if (ctx.state === 'suspended') await ctx.resume();
+    return true;
+  }
+  ctx = new (window.AudioContext || window.webkitAudioContext)();
+  try {
+    micStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+    });
+  } catch (e) {
+    detailEl.textContent = 'Microphone access denied: ' + e.message;
+    await ctx.close();
+    ctx = null;
+    return false;
+  }
+  micLatency = micStream.getAudioTracks()[0].getSettings().latency || 0;
+  const src = ctx.createMediaStreamSource(micStream);
+  // two high-pass stages at 3 kHz: the metronome tone loses ~40 dB
+  // before it reaches the detector, while a clap's broadband snap passes through
+  const hp1 = new BiquadFilterNode(ctx, { type: 'highpass', frequency: 3000 });
+  const hp2 = new BiquadFilterNode(ctx, { type: 'highpass', frequency: 3000 });
+  const mute = new GainNode(ctx, { gain: 0 });
+
+  if (!await loadWorklet()) {
+    detailEl.textContent = 'Audio setup failed: could not load the clap detector.';
+    teardownAudio();
+    return false;
+  }
+  detector = new AudioWorkletNode(ctx, 'clap-detector');
+  detector.port.onmessage = e => {
+    const m = e.data;
+    if (m.type !== 'clap') { detLevels.push(m); return; }
+    detTicks.push(m.t);
+    if (state !== 'playing') return;
+    // a detection shortly after a count-in beat is the app's own bright blip
+    // arriving back through the mic: detected − scheduled = round-trip latency
+    const k = Math.round((m.t - startAt) / beatDur);
+    const d = m.t - (startAt + k * beatDur);
+    if (k >= 0 && k < countInBeats && d >= 0 && d <= Math.min(0.3, beatDur * 0.6)) {
+      latSamples.push(d);
+      const s = [...latSamples].sort((a, b) => a - b);
+      measuredLat = s[s.length >> 1];
+    } else {
+      // the player claps against what they HEAR (delayed by output latency) and
+      // the mic stamps it late by its input latency — remove both from scoring
+      onClap(m.t - effLat());
+    }
+  };
+  src.connect(hp1).connect(hp2).connect(detector);
+  detector.connect(mute).connect(ctx.destination); // keeps the node pulled; outputs silence
+  sendFloor();
+  return true;
+}
+
+// the slider reads the intuitive way (right = more sensitive), so invert it to
+// get the absolute detection floor the worklet compares peaks against
+function sensFloor() {
+  return 0.21 - +sensEl.value; // min (0.01) + max (0.2) − slider value
+}
+
+function sendFloor() {
+  if (detector) detector.port.postMessage({ floor: sensFloor() });
+}
+
+// read live: outputLatency isn't populated until playback actually starts
+function latComp() {
+  return (ctx.outputLatency || ctx.baseLatency || 0) + micLatency;
+}
+
+// prefer the count-in loopback measurement; the browser's reported values are
+// the fallback when no blip made it back (e.g. headphones — no acoustic path)
+function effLat() {
+  return measuredLat !== null ? measuredLat : latComp();
+}
+
+function teardownAudio() {
+  if (micStream) micStream.getTracks().forEach(t => t.stop());
+  if (ctx && ctx.state !== 'closed') ctx.close();
+  ctx = null;
+  detector = null;
+}
+
+function click(time, accent, bright) {
+  const osc = ctx.createOscillator();
+  const g = ctx.createGain();
+  // pitches chosen so even the speaker's 2nd/3rd distortion harmonics stay
+  // below the detector's 3 kHz high-pass; the 4 ms attack ramp avoids the
+  // broadband splatter of an instant-on sine
+  osc.frequency.value = accent ? 990 : 660;
+  g.gain.setValueAtTime(0, time);
+  g.gain.linearRampToValueAtTime(0.4, time + 0.004);
+  g.gain.exponentialRampToValueAtTime(0.001, time + 0.05);
+  osc.connect(g).connect(ctx.destination);
+  osc.start(time);
+  osc.stop(time + 0.06);
+  if (bright) {
+    // count-in only: a 6 kHz blip that PASSES the detector's high-pass, so the
+    // app hears its own click through the mic and measures the true round-trip
+    // latency (output + input) instead of trusting the browser's estimates
+    const o2 = ctx.createOscillator();
+    const g2b = ctx.createGain();
+    o2.frequency.value = 6000;
+    g2b.gain.setValueAtTime(0, time);
+    g2b.gain.linearRampToValueAtTime(0.3, time + 0.002);
+    g2b.gain.exponentialRampToValueAtTime(0.001, time + 0.03);
+    o2.connect(g2b).connect(ctx.destination);
+    o2.start(time);
+    o2.stop(time + 0.04);
+  }
+}
+
+// --- the game ---
+async function start() {
+  startBtn.disabled = true;      // mic setup is async; block re-clicks until it settles
+  const ok = await ensureAudio();
+  startBtn.disabled = false;
+  if (!ok) return;
+
+  beatDur = 60 / (+document.getElementById('bpm').value || 57);
+  offsets = [];
+  claps = [];
+  expected = [];
+  missMarks = [];
+  misses = 0;
+  history = [];
+  detLevels = [];   // a new AudioContext restarts its clock, so stale times would never expire
+  detTicks = [];
+  latSamples = [];
+  measuredLat = null;
+  recent = [];
+  randModes = [];
+  level = enabledLevels()[0];
+  bannerMode = 0;
+  state = 'playing';
+  startBtn.textContent = 'Stop';
+  startBtn.classList.add('stop');
+  verdictEl.textContent = '';
+  detailEl.textContent = '';
+  statsEl.textContent = '';
+  updateLevelHUD(false);
+
+  // schedule metronome clicks a half-second ahead, forever
+  startAt = ctx.currentTime + 0.3;
+  t0 = startAt + countInBeats * beatDur;   // scoring grid begins after count-in
+  let nextBeat = 0;
+
+  function scheduler() {
+    if (state !== 'playing') return;
+    while (startAt + nextBeat * beatDur < ctx.currentTime + 0.5) {
+      const bt = startAt + nextBeat * beatDur;
+      click(bt, nextBeat % 4 === 0, nextBeat < countInBeats);
+      if (nextBeat >= countInBeats) {
+        // queue the grid points the player is expected to clap on this beat
+        const n = Math.floor((nextBeat - countInBeats) / 4);
+        const sd = modeForMeasure(n);
+        const g = beatDur / sd;
+        for (let s = 0; s < sd; s++) expected.push({ time: bt + s * g, grid: g, hit: false });
+      }
+      nextBeat++;
+    }
+    setTimeout(scheduler, 100);
+  }
+  scheduler();
+
+  requestAnimationFrame(drawViz);
+}
+
+function onClap(t) {
+  const n = Math.max(0, Math.floor((t - t0) / measDur()));
+  const subDiv = modeForMeasure(n);
+  const grid = beatDur / subDiv;
+  if (t < t0 - grid / 2) return; // ignore claps during count-in
+  const nearest = Math.round((t - t0) / grid) * grid + t0;
+  const off = (t - nearest) * 1000; // ms; negative = early
+  offsets.push(off);
+
+  // claim the expected grid point so it isn't later counted as a miss
+  let best = null;
+  for (const ex of expected) {
+    if (Math.abs(ex.time - t) <= ex.grid / 2 &&
+        (!best || Math.abs(ex.time - t) < Math.abs(best.time - t))) best = ex;
+  }
+  if (best) best.hit = true;
+
+  const cls = Math.abs(off) <= 20 ? 'great'
+            : Math.abs(off) <= 50 ? 'good'
+            : off < 0 ? 'early' : 'late';
+  claps.push({ time: t, cls });
+  const prevEwma = history.length ? history[history.length - 1].ewma : off;
+  history.push({ t, off, cls, ewma: EWMA_A * off + (1 - EWMA_A) * prevEwma });
+
+  verdictEl.className = cls;
+  verdictEl.textContent = cls === 'great' ? 'GREAT!' : cls.toUpperCase();
+  detailEl.textContent = (off < 0 ? '−' : '+') + Math.abs(off).toFixed(0) + ' ms';
+  updateStats();
+  recordResult(cls === 'great' || cls === 'good');
+}
+
+function onMiss(ex) {
+  misses++;
+  missMarks.push({ time: ex.time });
+  verdictEl.className = 'miss';
+  verdictEl.textContent = 'MISS';
+  detailEl.textContent = '';
+  updateStats();
+  recordResult(false);
+}
+
+function updateStats() {
+  const good = offsets.filter(o => Math.abs(o) <= 50).length;
+  const avg = offsets.length ? offsets.reduce((s, o) => s + o, 0) / offsets.length : 0;
+  statsEl.textContent =
+    `${good}/${offsets.length} good · ${misses} missed · avg ${avg < 0 ? '−' : '+'}${Math.abs(avg).toFixed(0)} ms`;
+}
+
+function recordResult(wasGood) {
+  recent.push(wasGood);
+  if (recent.length > WINDOW) recent.shift();
+  if (recent.length < WINDOW) return;
+  const goods = recent.filter(Boolean).length;
+  const on = enabledLevels();
+  if (goods >= PROMOTE_AT) {
+    const higher = on.filter(l => l > level);
+    if (higher.length) setLevel(higher[0], true);
+    else recent = []; // maxed out — restart the window
+  } else if (goods <= DEMOTE_AT) {
+    const lower = on.filter(l => l < level);
+    if (lower.length) setLevel(lower[lower.length - 1], true);
+    else recent = [];
+  }
+}
+
+// --- DDR-style falling display ---
+// Notes fall from the top; a note crosses the target line (screen midpoint)
+// exactly at its scheduled audio time. Claps fall in the same stream, so a
+// clap tick sits right where it landed relative to the note it was aiming at.
+
+function drawIdle() {
+  g2.clearRect(0, 0, W, H);
+  drawTargetLine(false);
+  g2.fillStyle = '#555';
+  g2.font = '16px sans-serif';
+  g2.textAlign = 'center';
+  g2.fillText('press Start', W / 2, H / 2 - 18);
+  modeEl.textContent = '';
+  levelEl.textContent = '';
+}
+
+function drawTargetLine(flash) {
+  g2.strokeStyle = flash ? '#4f9' : '#1a5';
+  g2.lineWidth = flash ? 4 : 2;
+  g2.beginPath();
+  g2.moveTo(0, H / 2);
+  g2.lineTo(W, H / 2);
+  g2.stroke();
+}
+
+function drawViz() {
+  if (state !== 'playing') { drawIdle(); return; }
+
+  const midY = H / 2, cx = W / 2;
+  const now = ctx.currentTime;
+  const pps = H / 4;             // px per second: line-to-top ≈ 2 s of lookahead
+  const horizon = midY / pps;
+  const timeToY = t => midY + (now - t) * pps;
+  const mDur = measDur();
+
+  // an expected grid point more than half a grid in the past can no longer be claimed
+  while (expected.length && expected[0].time + expected[0].grid / 2 < now) {
+    const ex = expected.shift();
+    if (!ex.hit) onMiss(ex);
+  }
+  missMarks = missMarks.filter(m => now - m.time < CHART_SPAN + 2);
+
+  g2.clearRect(0, 0, W, H);
+
+  // triplet measures get a violet wash drawn as bands in the falling stream,
+  // so the tint scrolls in with the notes and crosses the target line exactly
+  // as the measure's "1" does
+  g2.fillStyle = 'rgba(120, 80, 230, 0.13)';
+  const nWashLo = Math.max(0, Math.floor((now - horizon - t0) / mDur));
+  const nWashHi = Math.floor((now + horizon - t0) / mDur);
+  for (let n = nWashLo; n <= nWashHi; n++) {
+    if (modeForMeasure(n) !== 3) continue;
+    const yTop = timeToY(t0 + (n + 1) * mDur);
+    const yBot = timeToY(t0 + n * mDur);
+    g2.fillRect(0, yTop, W, yBot - yTop);
+  }
+
+  // clap ticks (behind the notes)
+  claps = claps.filter(c => now - c.time < horizon + 0.2);
+  for (const c of claps) {
+    const y = timeToY(c.time);
+    g2.strokeStyle = CLAP_COLORS[c.cls];
+    g2.lineWidth = 3;
+    g2.beginPath();
+    g2.moveTo(cx - 130, y);
+    g2.lineTo(cx + 130, y);
+    g2.stroke();
+  }
+
+  // red ✕ where a note went unclapped
+  g2.strokeStyle = '#d55';
+  g2.lineWidth = 2;
+  for (const m of missMarks) {
+    if (now - m.time > horizon) continue;
+    const y = timeToY(m.time);
+    g2.beginPath();
+    g2.moveTo(cx - 8, y - 8); g2.lineTo(cx + 8, y + 8);
+    g2.moveTo(cx + 8, y - 8); g2.lineTo(cx - 8, y + 8);
+    g2.stroke();
+  }
+
+  // intermediate (subdivision) notes — hidden once an enabled level 2 is reached
+  if (!effectActive(2)) {
+    g2.font = '12px sans-serif';
+    g2.textAlign = 'center';
+    g2.textBaseline = 'middle';
+    const nLo = Math.max(0, Math.floor((now - horizon - t0) / mDur));
+    const nHi = Math.floor((now + horizon - t0) / mDur);
+    for (let n = nLo; n <= nHi; n++) {
+      const subDiv = modeForMeasure(n);
+      const grid = beatDur / subDiv;
+      for (let j = 1; j < 4 * subDiv; j++) {
+        if (j % subDiv === 0) continue; // main beats drawn below
+        const t = t0 + n * mDur + j * grid;
+        if (t < now - horizon || t > now + horizon) continue;
+        const y = timeToY(t);
+        g2.beginPath();
+        g2.arc(cx, y, 10, 0, 2 * Math.PI);
+        g2.fillStyle = '#222';
+        g2.fill();
+        g2.strokeStyle = '#777';
+        g2.lineWidth = 1.5;
+        g2.stroke();
+        g2.fillStyle = '#999';
+        g2.fillText(subDiv === 2 ? '&' : (j % 3 === 1 ? 'trip' : 'let'), cx, y);
+      }
+    }
+  }
+
+  // main beats (including count-in) — hidden once an enabled level 3 is reached
+  if (!effectActive(3)) {
+    g2.font = 'bold 15px sans-serif';
+    g2.textAlign = 'center';
+    g2.textBaseline = 'middle';
+    const kLo = Math.max(0, Math.ceil((now - horizon - startAt) / beatDur));
+    const kHi = Math.floor((now + horizon - startAt) / beatDur);
+    for (let k = kLo; k <= kHi; k++) {
+      const y = timeToY(startAt + k * beatDur);
+      const inCountIn = k < countInBeats;
+      g2.beginPath();
+      g2.arc(cx, y, 17, 0, 2 * Math.PI);
+      g2.fillStyle = inCountIn ? '#1c1c1c' : '#262626';
+      g2.fill();
+      g2.strokeStyle = inCountIn ? '#555' : (k % 4 === 0 ? '#4f9' : '#ccc');
+      g2.lineWidth = 2;
+      g2.stroke();
+      g2.fillStyle = inCountIn ? '#666' : '#eee';
+      g2.fillText(String(k % 4 + 1), cx, y);
+    }
+  }
+
+  // target line on top, flashing on each beat
+  const sinceBeat = (now - startAt) % beatDur;
+  drawTargetLine(now >= startAt && sinceBeat < 0.09);
+
+  drawChart(now);
+  drawDetChart(now);
+
+  // mode banner: current measure's mode; flash when it changes
+  const curMeas = Math.floor((now - t0) / mDur);
+  const sdNow = curMeas < 0 ? getSubDiv() : modeForMeasure(curMeas);
+  if (sdNow !== bannerMode) {
+    bannerMode = sdNow;
+    modeEl.textContent = sdNow === 2 ? 'EIGHTH NOTES' : 'TRIPLETS';
+    modeEl.classList.add('flash');
+    setTimeout(() => modeEl.classList.remove('flash'), 400);
+  }
+
+  requestAnimationFrame(drawViz);
+}
+
+// --- detection chart: what the detector heard vs. what it takes to trigger ---
+// A clap registers only when the grey peak trace clears BOTH lines: the orange
+// env ×4 transient threshold and the dashed blue sensitivity floor. A spike
+// with no green tick shows exactly which threshold it failed.
+function drawDetChart(now) {
+  const chH = 90, top = H - 110 - 12 - chH - 8, left = 12, right = W - 12, cw = right - left;
+  detLevels = detLevels.filter(p => now - p.t < DET_SPAN);
+  detTicks = detTicks.filter(t => now - t < DET_SPAN);
+
+  g2.fillStyle = 'rgba(20, 20, 20, 0.85)';
+  g2.fillRect(left, top, cw, chH);
+  g2.strokeStyle = '#333';
+  g2.lineWidth = 1;
+  g2.strokeRect(left, top, cw, chH);
+
+  // sqrt scale so quiet material near the floor stays visible; range runs to
+  // 2.0 so the env ×4 spike after a clap shows its shape instead of a flat cap
+  const yOf = v => top + chH - 3 - Math.sqrt(Math.min(v, 2) / 2) * (chH - 18);
+  const xOf = t => right - ((now - t) / DET_SPAN) * cw;
+
+  // green tick wherever the detector fired (drawn first, traces on top)
+  g2.strokeStyle = '#2d7';
+  g2.lineWidth = 1.5;
+  for (const t of detTicks) {
+    const x = xOf(t);
+    if (x < left) continue;
+    g2.beginPath();
+    g2.moveTo(x, top + 2);
+    g2.lineTo(x, top + chH - 2);
+    g2.stroke();
+  }
+
+  const trace = (get, color) => {
+    g2.strokeStyle = color;
+    g2.lineWidth = 1.5;
+    g2.beginPath();
+    let started = false;
+    for (const p of detLevels) {
+      const x = xOf(p.t);
+      if (x < left) continue;
+      if (!started) { g2.moveTo(x, yOf(get(p))); started = true; }
+      else g2.lineTo(x, yOf(get(p)));
+    }
+    if (started) g2.stroke();
+  };
+  trace(p => p.env * 4, '#fa5');   // transient threshold
+  trace(p => p.peak, '#ccc');      // mic peak (post high-pass)
+
+  const floor = sensFloor();
+  g2.strokeStyle = '#5af';
+  g2.lineWidth = 1;
+  g2.setLineDash([4, 3]);
+  g2.beginPath();
+  g2.moveTo(left, yOf(floor));
+  g2.lineTo(right, yOf(floor));
+  g2.stroke();
+  g2.setLineDash([]);
+
+  g2.font = '10px sans-serif';
+  g2.textAlign = 'left';
+  g2.textBaseline = 'top';
+  let lx = left + 6;
+  for (const [label, color] of
+       [['mic peak', '#ccc'], ['env ×4', '#fa5'], ['floor', '#5af'], ['detected', '#2d7'],
+        [`lat −${(effLat() * 1000).toFixed(0)} ms (${measuredLat !== null ? 'measured' : 'estimated'})`, '#777']]) {
+    g2.fillStyle = color;
+    g2.fillText(label, lx, top + 4);
+    lx += g2.measureText(label).width + 14;
+  }
+}
+
+// --- bottom chart: last minute of clap offsets, newest at the right edge ---
+function drawChart(now) {
+  const chH = 110, top = H - chH - 12, left = 12, right = W - 12, cw = right - left;
+  history = history.filter(p => now - p.t < CHART_SPAN);
+
+  g2.fillStyle = 'rgba(20, 20, 20, 0.85)';
+  g2.fillRect(left, top, cw, chH);
+  g2.strokeStyle = '#333';
+  g2.lineWidth = 1;
+  g2.strokeRect(left, top, cw, chH);
+
+  const mid = top + chH / 2;
+  const yOf = off =>
+    mid + (Math.max(-CHART_MAX, Math.min(CHART_MAX, off)) / CHART_MAX) * (chH / 2 - 8);
+  const xOf = t => right - ((now - t) / CHART_SPAN) * cw;
+
+  // ±50 ms "good" band and zero line (early above, late below — same as the lane)
+  g2.fillStyle = 'rgba(34, 221, 119, 0.10)';
+  g2.fillRect(left, yOf(-50), cw, yOf(50) - yOf(-50));
+  g2.strokeStyle = '#1a5';
+  g2.beginPath();
+  g2.moveTo(left, mid);
+  g2.lineTo(right, mid);
+  g2.stroke();
+
+  // misses as small ✕ along the top edge
+  g2.strokeStyle = '#d55';
+  g2.lineWidth = 1.5;
+  for (const m of missMarks) {
+    const x = xOf(m.time);
+    if (x < left) continue;
+    g2.beginPath();
+    g2.moveTo(x - 3, top + 4); g2.lineTo(x + 3, top + 10);
+    g2.moveTo(x + 3, top + 4); g2.lineTo(x - 3, top + 10);
+    g2.stroke();
+  }
+
+  // one dot per clap, colored by verdict
+  for (const p of history) {
+    const x = xOf(p.t);
+    if (x < left) continue;
+    g2.fillStyle = CLAP_COLORS[p.cls];
+    g2.beginPath();
+    g2.arc(x, yOf(p.off), 3, 0, 2 * Math.PI);
+    g2.fill();
+  }
+
+  // exponentially weighted moving average of the offset
+  if (history.length > 1) {
+    g2.strokeStyle = '#fd4';
+    g2.lineWidth = 2;
+    g2.beginPath();
+    let started = false;
+    for (const p of history) {
+      const x = xOf(p.t);
+      if (x < left) continue;
+      if (!started) { g2.moveTo(x, yOf(p.ewma)); started = true; }
+      else g2.lineTo(x, yOf(p.ewma));
+    }
+    g2.stroke();
+  }
+
+  g2.fillStyle = '#777';
+  g2.font = '10px sans-serif';
+  g2.textAlign = 'left';
+  g2.textBaseline = 'top';
+  g2.fillText('early', left + 6, top + 4);
+  g2.textBaseline = 'bottom';
+  g2.fillText('late', left + 6, top + chH - 4);
+}
+
+function stop() {
+  state = 'idle';
+  startBtn.textContent = 'Start';
+  startBtn.classList.remove('stop');
+  // suspend rather than tear down: keeps the granted mic stream alive so the
+  // next Start doesn't prompt for permission again (worklet stops processing
+  // while suspended); reload the page to release the mic entirely
+  if (ctx && ctx.state === 'running') ctx.suspend();
+  drawIdle();
+  updateLevelHUD(false);
+}
+</script>
+</body>
+</html>
