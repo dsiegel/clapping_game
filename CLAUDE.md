@@ -47,8 +47,9 @@ great (within ±20 ms), or missed the note entirely.
 ## Layout
 
 Everything lives in `index.html`: a fullscreen `<canvas>`, a floating control panel on the
-left (BPM, mode, levels, sensitivity, Start), and a HUD overlay at top center
-(current mode banner, level, verdict, offset, stats). Serve over localhost — `getUserMedia`
+left (BPM, mode, levels, sensitivity, Start), a HUD overlay at top center
+(current mode banner, level, verdict, offset, stats), big current-streak counters at top
+right, and a best-streaks line at bottom right just above the detection chart. Serve over localhost — `getUserMedia`
 needs a secure context (`python3 -m http.server 8123`).
 
 ## Function index (all in `index.html`)
@@ -81,9 +82,9 @@ needs a secure context (`python3 -m http.server 8123`).
 - `onMiss(ex)` — fires when an expected grid point passes unclaimed: HUD "MISS", red ✕,
   counts as a bad result.
 - `updateStats()` — refreshes the good/missed/average line in the HUD.
-- `updateStreaks()` — refreshes the streak line in the HUD: current and best consecutive
-  good-or-better claps, and current/best great-only claps (a miss or off-grid clap resets
-  both; a merely good clap resets the great streak).
+- `updateStreaks()` — refreshes the big current-streak counters at top right (consecutive
+  good-or-better claps, and great-only claps; a miss or off-grid clap resets both, a merely
+  good clap resets the great streak) and the best-streaks line at bottom right.
 
 ### Modes & levels
 - `getSubDiv()` — current radio selection (2 = eighths, 3 = triplets), read live.

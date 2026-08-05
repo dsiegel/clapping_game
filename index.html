@@ -84,8 +84,29 @@
   #verdict.miss  { color: #d55; }
   #detail { color: #999; height: 1.2rem; }
   #stats { color: #999; font-size: 0.9rem; }
-  #streaks { color: #8a8; font-size: 0.9rem; }
+  #streaks {
+    position: fixed;
+    top: 14px;
+    right: 18px;
+    z-index: 5;
+    text-align: right;
+    pointer-events: none;
+    color: #8a8;
+    line-height: 1.1;
+  }
+  #streaks .num { font-size: 2.8rem; font-weight: bold; }
+  #streaks .lbl { font-size: 0.8rem; }
   #streaks .great { color: #fd4; }
+  #bests {
+    position: fixed;
+    right: 18px;
+    bottom: 226px;   /* just above the detection chart (H − 220) */
+    z-index: 5;
+    text-align: right;
+    pointer-events: none;
+    color: #999;
+    font-size: 0.9rem;
+  }
 </style>
 </head>
 <body>
@@ -97,8 +118,10 @@
     <div id="verdict"></div>
     <div id="detail"></div>
     <div id="stats"></div>
-    <div id="streaks"></div>
   </div>
+
+  <div id="streaks"></div>
+  <div id="bests"></div>
 
   <div id="panel">
     <h1>👏 Clap Trainer</h1>
@@ -170,6 +193,7 @@ const verdictEl = document.getElementById('verdict');
 const detailEl = document.getElementById('detail');
 const statsEl = document.getElementById('stats');
 const streaksEl = document.getElementById('streaks');
+const bestsEl = document.getElementById('bests');
 const modeEl = document.getElementById('modeBanner');
 const levelEl = document.getElementById('levelEl');
 const startBtn = document.getElementById('startBtn');
@@ -460,7 +484,7 @@ async function start() {
   verdictEl.textContent = '';
   detailEl.textContent = '';
   statsEl.textContent = '';
-  streaksEl.textContent = '';
+  updateStreaks();
   updateLevelHUD(false);
 
   // schedule metronome clicks a half-second ahead, forever
@@ -540,8 +564,9 @@ function onMiss(ex) {
 
 function updateStreaks() {
   streaksEl.innerHTML =
-    `streak ${goodStreak} good (best ${bestGoodStreak}) · ` +
-    `<span class="great">${greatStreak} great (best ${bestGreatStreak})</span>`;
+    `<div><span class="num">${goodStreak}</span> <span class="lbl">good streak</span></div>` +
+    `<div class="great"><span class="num">${greatStreak}</span> <span class="lbl">great streak</span></div>`;
+  bestsEl.textContent = `best ${bestGoodStreak} good · ${bestGreatStreak} great`;
 }
 
 function updateStats() {
