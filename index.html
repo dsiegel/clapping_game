@@ -152,6 +152,11 @@ const DET_SPAN = 12;     // seconds shown in the detection chart
 let level = 1;
 let recent = [];         // rolling window of good/bad results
 const WINDOW = 12, PROMOTE_AT = 10, DEMOTE_AT = 6;
+// after a level change the first few results don't count — the player needs a
+// moment to adapt (in triplets a single measure is 12 results, so without this
+// the adjustment misses alone could demote right back)
+const GRACE = 8;
+let graceLeft = 0;
 const LEVEL_DESC = {
   1: 'all notes shown',
   2: 'subdivisions hidden',
@@ -226,6 +231,7 @@ function setLevel(l, flash) {
   const entering4 = l >= 4 && level < 4;
   level = l;
   recent = [];
+  graceLeft = GRACE;
   if (entering4 && state === 'playing') {
     // lock the in-progress measure to the practiced mode so the first
     // random switch can only happen on a "1"
@@ -443,6 +449,7 @@ async function start() {
   latSamples = [];
   measuredLat = null;
   recent = [];
+  graceLeft = 0;
   randModes = [];
   goodStreak = greatStreak = bestGoodStreak = bestGreatStreak = 0;
   level = enabledLevels()[0];
@@ -545,6 +552,7 @@ function updateStats() {
 }
 
 function recordResult(wasGood) {
+  if (graceLeft > 0) { graceLeft--; return; }
   recent.push(wasGood);
   if (recent.length > WINDOW) recent.shift();
   if (recent.length < WINDOW) return;

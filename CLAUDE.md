@@ -94,7 +94,9 @@ needs a secure context (`python3 -m http.server 8123`).
 - `setLevel(l, flash)` — switches level, resets the scoring window, locks the in-progress
   measure's mode when entering level 4.
 - `recordResult(wasGood)` — rolling 12-result window; ≥10 good promotes to the next enabled
-  level, ≤6 good demotes.
+  level, ≤6 good demotes. The first 8 results after a level change are ignored (grace
+  period) so adjustment misses can't demote right back — in triplets one measure alone
+  is 12 results.
 - `updateLevelHUD(flash)` — level text in the HUD + highlight on the current level checkbox.
 
 ### Rendering
