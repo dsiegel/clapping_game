@@ -1,4 +1,4 @@
-# Clap Trainer
+# Clapping Game
 
 A browser-based rhythm trainer. The app plays a quarter-note metronome and you clap the
 subdivisions — eighth notes or triplets. Your microphone picks up each clap and the game

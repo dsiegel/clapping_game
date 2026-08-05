@@ -1,4 +1,4 @@
-# Clap Trainer
+# Clapping Game
 
 A browser-based rhythm trainer. The app plays a quarter-note metronome (4/4, default 57 BPM)
 and the player claps the subdivisions — eighth notes ("1 & 2 &") or triplets
