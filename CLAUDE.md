@@ -38,7 +38,8 @@ great (within ±20 ms), or missed the note entirely.
   the same stream, misses drop red ✕ marks, so relative timing is directly visible.
 - **Level progression.** A rolling window of the last 12 results drives promotion/demotion:
   1. all notes shown → 2. subdivisions hidden → 3. beats hidden → 4. random eighths/triplets
-  per measure (mode can only change on a "1"). Checkboxes enable/disable individual levels;
+  in 2–4-measure segments (mode can only change on a "1"). Checkboxes enable/disable
+  individual levels;
   progression skips disabled ones and effects stack — each level's effect applies only if
   that level is enabled and reached (level 3 unchecked → beats stay visible at level 4).
   The current level is highlighted. Triplet measures tint the whole canvas violet.
@@ -94,7 +95,8 @@ needs a secure context (`python3 -m http.server 8123`).
 ### Modes & levels
 - `getSubDiv()` — current radio selection (2 = eighths, 3 = triplets), read live.
 - `modeForMeasure(n)` — the subdivision governing measure *n*: the radio choice below
-  level 4, a cached random pick per measure at level 4 (so drawing/scoring/banner agree).
+  level 4, a cached random pick at level 4 held for 2–4-measure segments (so
+  drawing/scoring/banner agree and segments aren't over in a single measure).
 - `enabledLevels()` — levels whose checkboxes are on (falls back to [1]).
 - `effectActive(l)` — whether level *l*'s effect applies: enabled AND current level ≥ l.
 - `setLevel(l, flash)` — switches level, resets the scoring window, locks the in-progress

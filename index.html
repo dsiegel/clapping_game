@@ -240,11 +240,19 @@ function getSubDiv() {
 const measDur = () => 4 * beatDur;
 
 // Which subdivision applies to measure n (0 = first measure after count-in).
-// Below level 4 it's the user's radio choice; at level 4 each measure gets a
-// random mode, decided once and remembered so drawing and scoring agree.
+// Below level 4 it's the user's radio choice; at level 4 the mode is random,
+// decided once and remembered so drawing and scoring agree. Modes are held
+// for 2–4-measure segments — a per-measure coin flip made half of all
+// segments a single measure, which in triplets is over in 12 notes.
 function modeForMeasure(n) {
   if (!effectActive(4)) return getSubDiv();
-  if (randModes[n] === undefined) randModes[n] = Math.random() < 0.5 ? 2 : 3;
+  if (randModes[n] === undefined) {
+    const mode = Math.random() < 0.5 ? 2 : 3;
+    const len = 2 + Math.floor(Math.random() * 3);
+    // never overwrite: a measure's mode is decided exactly once, or drawing
+    // and scoring (which query at different look-aheads) could disagree
+    for (let i = 0; i < len && randModes[n + i] === undefined; i++) randModes[n + i] = mode;
+  }
   return randModes[n];
 }
 
