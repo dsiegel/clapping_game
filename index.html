@@ -135,9 +135,10 @@
       <label class="lvl" data-lvl="3"><input type="checkbox" checked> 3 · beats hidden</label>
       <label class="lvl" data-lvl="4"><input type="checkbox" checked> 4 · random mode switches</label>
     </div>
+    <label><input type="checkbox" id="micOn" checked> Use microphone</label>
     <label>Mic sensitivity <input type="range" id="sens" min="0.01" max="0.2" step="0.005" value="0.17"></label>
     <button id="startBtn">Start</button>
-    <p id="hint">Notes cross the green line exactly on the beat — clap so your tick lands on the
+    <p id="hint">Notes cross the green line exactly on the beat — clap (or press SPACE) so your tick lands on the
     note. Keep scoring green and the game levels up: first the small in-between notes disappear,
     then the beats themselves, then the mode starts switching randomly at the top of each measure
     (watch the banner). Slip up and you drop a level. If claps aren't registering, drag
@@ -198,6 +199,7 @@ const modeEl = document.getElementById('modeBanner');
 const levelEl = document.getElementById('levelEl');
 const startBtn = document.getElementById('startBtn');
 const sensEl = document.getElementById('sens');
+const micEl = document.getElementById('micOn');
 const cv = document.getElementById('viz');
 const g2 = cv.getContext('2d');
 
@@ -220,6 +222,16 @@ resize();
 
 startBtn.onclick = () => state === 'playing' ? stop() : start();
 sensEl.oninput = sendFloor;
+
+// spacebar counts as a clap whenever the game is running, mic or not
+window.addEventListener('keydown', e => {
+  if (e.code !== 'Space' || state !== 'playing') return;
+  e.preventDefault(); // no page scroll, no re-triggering a focused button/checkbox
+  if (e.repeat) return;
+  // the player presses against what they HEAR — remove output latency, but not
+  // the mic-path components effLat() includes (a keypress never crosses the mic)
+  onClap(ctx.currentTime - (ctx.outputLatency || ctx.baseLatency || 0));
+});
 
 function getSubDiv() {
   return +document.querySelector('input[name=mode]:checked').value;
@@ -342,12 +354,15 @@ async function loadWorklet() {
 
 async function ensureAudio() {
   if (ctx && ctx.state !== 'closed') {
-    // reuse the existing mic + graph (stop() only suspends, so Start never
+    // reuse the existing context + graph (stop() only suspends, so Start never
     // has to re-request mic permission within a page load)
     if (ctx.state === 'suspended') await ctx.resume();
-    return true;
+  } else {
+    ctx = new (window.AudioContext || window.webkitAudioContext)();
   }
-  ctx = new (window.AudioContext || window.webkitAudioContext)();
+  // mic off: the metronome still needs the context, but skip the whole
+  // detection chain — spacebar is the only clap input
+  if (!micEl.checked || detector) return true;
   try {
     micStream = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
@@ -376,7 +391,7 @@ async function ensureAudio() {
     const m = e.data;
     if (m.type !== 'clap') { detLevels.push(m); return; }
     detTicks.push(m.t);
-    if (state !== 'playing') return;
+    if (state !== 'playing' || !micEl.checked) return;
     // a detection shortly after a count-in beat is the app's own bright blip
     // arriving back through the mic: detected − scheduled = round-trip latency
     const k = Math.round((m.t - startAt) / beatDur);
@@ -496,7 +511,7 @@ async function start() {
     if (state !== 'playing') return;
     while (startAt + nextBeat * beatDur < ctx.currentTime + 0.5) {
       const bt = startAt + nextBeat * beatDur;
-      click(bt, nextBeat % 4 === 0, nextBeat < countInBeats);
+      click(bt, nextBeat % 4 === 0, nextBeat < countInBeats && !!detector && micEl.checked);
       if (nextBeat >= countInBeats) {
         // queue the grid points the player is expected to clap on this beat
         const n = Math.floor((nextBeat - countInBeats) / 4);
@@ -731,7 +746,8 @@ function drawViz() {
 
   // count-in: the app is listening to its own clicks to measure latency, and a
   // clap would pollute the samples — pulse a big warning until the grid starts
-  if (now < t0) {
+  // (mic off → nothing is measured, so nothing to stay quiet for)
+  if (now < t0 && detector && micEl.checked) {
     const pulse = 0.6 + 0.4 * Math.abs(Math.sin(((now - startAt) / beatDur) * Math.PI));
     const yWarn = midY - Math.min(150, H * 0.2);
     g2.textAlign = 'center';
