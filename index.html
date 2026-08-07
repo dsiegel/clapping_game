@@ -13,22 +13,49 @@
     margin: 0;
     overflow: hidden;
   }
-  #viz { position: fixed; inset: 0; display: block; }
+  #viz {
+    position: fixed;
+    inset: 0;
+    display: block;
+    touch-action: none;               /* taps are claps — no scroll/double-tap zoom */
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;      /* no iOS long-press callout mid-game */
+  }
+
+  #menuBtn {
+    position: fixed;
+    left: 12px;
+    top: 12px;
+    z-index: 11;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    font-size: 1.3rem;
+    line-height: 1;
+    background: rgba(24, 24, 24, 0.88);
+    border: 1px solid #333;
+    border-radius: 10px;
+    color: #eee;
+  }
 
   #panel {
     position: fixed;
     left: 12px;
-    top: 12px;
+    top: 64px;
     z-index: 10;
     display: flex;
     flex-direction: column;
     gap: 0.7rem;
     width: 230px;
+    max-height: calc(100vh - 76px);   /* the hint makes the panel taller than a phone screen */
+    overflow-y: auto;
     padding: 1rem;
     background: rgba(24, 24, 24, 0.88);
     border: 1px solid #333;
     border-radius: 12px;
   }
+  #panel.hidden { display: none; }
   #panel h1 { margin: 0; font-size: 1.1rem; }
   #panel label { font-size: 0.85rem; display: block; }
   #panel input[type=range] { width: 100%; }
@@ -107,6 +134,13 @@
     color: #999;
     font-size: 0.9rem;
   }
+
+  @media (max-width: 600px) {
+    #modeBanner { font-size: 1.1rem; height: 1.4rem; }
+    #verdict { font-size: 1.5rem; height: 1.8rem; line-height: 1.8rem; }
+    #streaks .num { font-size: 1.8rem; }
+    #bests { font-size: 0.75rem; }
+  }
 </style>
 </head>
 <body>
@@ -123,6 +157,8 @@
   <div id="streaks"></div>
   <div id="bests"></div>
 
+  <button id="menuBtn" aria-label="Toggle options menu">☰</button>
+
   <div id="panel">
     <h1>👏 Clapping Game</h1>
     <label>BPM <input type="number" id="bpm" value="57" min="40" max="160" style="width:4.5rem"></label>
@@ -138,8 +174,8 @@
     <label><input type="checkbox" id="micOn" checked> Use microphone</label>
     <label>Mic sensitivity <input type="range" id="sens" min="0.01" max="0.2" step="0.005" value="0.17"></label>
     <button id="startBtn">Start</button>
-    <p id="hint">Notes cross the green line exactly on the beat — clap (or press SPACE) so your tick lands on the
-    note. Keep scoring green and the game levels up: first the small in-between notes disappear,
+    <p id="hint">Notes cross the green line exactly on the beat — clap (or press SPACE, or tap the
+    screen) so your tick lands on the note. Keep scoring green and the game levels up: first the small in-between notes disappear,
     then the beats themselves, then the mode starts switching randomly at the top of each measure
     (watch the banner). Slip up and you drop a level. If claps aren't registering, drag
     sensitivity right. First 4 beats are a count-in — stay quiet during it: the app listens to
@@ -198,6 +234,8 @@ const bestsEl = document.getElementById('bests');
 const modeEl = document.getElementById('modeBanner');
 const levelEl = document.getElementById('levelEl');
 const startBtn = document.getElementById('startBtn');
+const panelEl = document.getElementById('panel');
+const menuBtn = document.getElementById('menuBtn');
 const sensEl = document.getElementById('sens');
 const micEl = document.getElementById('micOn');
 const cv = document.getElementById('viz');
@@ -222,15 +260,29 @@ resize();
 
 startBtn.onclick = () => state === 'playing' ? stop() : start();
 sensEl.oninput = sendFloor;
+menuBtn.onclick = () => panelEl.classList.toggle('hidden');
 
-// spacebar counts as a clap whenever the game is running, mic or not
+// a keypress or tap counts as a clap: the player acts against what they HEAR —
+// remove output latency, but not the mic-path components effLat() includes
+// (a manual input never crosses the mic)
+function manualClap() {
+  if (state !== 'playing') return;
+  onClap(ctx.currentTime - (ctx.outputLatency || ctx.baseLatency || 0));
+}
+
 window.addEventListener('keydown', e => {
   if (e.code !== 'Space' || state !== 'playing') return;
   e.preventDefault(); // no page scroll, no re-triggering a focused button/checkbox
   if (e.repeat) return;
-  // the player presses against what they HEAR — remove output latency, but not
-  // the mic-path components effLat() includes (a keypress never crosses the mic)
-  onClap(ctx.currentTime - (ctx.outputLatency || ctx.baseLatency || 0));
+  manualClap();
+});
+
+// tapping (or clicking) the play area is a clap — pointerdown covers mouse and
+// touch with one listener, and only fires on the canvas, never on the panel
+cv.addEventListener('pointerdown', e => {
+  if (state !== 'playing') return;
+  e.preventDefault();
+  manualClap();
 });
 
 function getSubDiv() {
@@ -504,6 +556,7 @@ async function start() {
   state = 'playing';
   startBtn.textContent = 'Stop';
   startBtn.classList.add('stop');
+  panelEl.classList.add('hidden'); // clear the deck for the falling lane (☰ reopens)
   verdictEl.textContent = '';
   detailEl.textContent = '';
   statsEl.textContent = '';
@@ -930,6 +983,7 @@ function stop() {
   state = 'idle';
   startBtn.textContent = 'Start';
   startBtn.classList.remove('stop');
+  panelEl.classList.remove('hidden'); // idle screen says "press Start" — make it reachable
   // suspend rather than tear down: keeps the granted mic stream alive so the
   // next Start doesn't prompt for permission again (worklet stops processing
   // while suspended); reload the page to release the mic entirely

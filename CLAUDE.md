@@ -23,11 +23,12 @@ great (within ±20 ms), or missed the note entirely.
   AND jump 4× above a peak-hold envelope of the recent level (~40 ms decay). Clap peaks
   feed the envelope so their tails can't re-trigger; a 120 ms refractory period and
   sample-accurate timestamps round it out. No calibration step needed.
-- **Spacebar input.** SPACE always registers as a clap while playing (compensated by output
-  latency only — a keypress never crosses the mic path). A "Use microphone" checkbox in the
-  panel disables the mic entirely: unchecked at Start, `getUserMedia` is skipped (no
-  permission prompt, no calibration blips or count-in warning); unchecked mid-game, mic
-  detections are ignored live while spacebar keeps working.
+- **Spacebar / tap input.** SPACE, or tapping/clicking the canvas (mobile), always registers
+  as a clap while playing (compensated by output latency only — a manual input never crosses
+  the mic path). A "Use microphone" checkbox in the panel disables the mic entirely:
+  unchecked at Start, `getUserMedia` is skipped (no permission prompt, no calibration blips
+  or count-in warning); unchecked mid-game, mic detections are ignored live while
+  spacebar/tap keep working.
 - **Latency compensation.** Count-in clicks carry an extra 6 kHz blip that passes the
   detector's high-pass, so the app hears its own clicks through the mic and measures true
   round-trip latency (median of detected − scheduled). Scoring subtracts that from each
@@ -52,8 +53,10 @@ great (within ±20 ms), or missed the note entirely.
 
 ## Layout
 
-Everything lives in `index.html`: a fullscreen `<canvas>`, a floating control panel on the
-left (BPM, mode, levels, mic toggle, sensitivity, Start), a HUD overlay at top center
+Everything lives in `index.html`: a fullscreen `<canvas>`, a hamburger button (☰) at top
+left toggling a floating control panel (BPM, mode, levels, mic toggle, sensitivity, Start;
+the panel auto-hides on Start and reopens on Stop, and scrolls if taller than the
+viewport), a HUD overlay at top center
 (current mode banner, level, verdict, offset, stats), big current-streak counters at top
 right, and a best-streaks line at bottom right just above the detection chart. Serve over localhost — `getUserMedia`
 needs a secure context (`python3 -m http.server 8123`).
@@ -80,8 +83,10 @@ needs a secure context (`python3 -m http.server 8123`).
   the 3 kHz high-pass). `bright` (count-in only) adds the 6 kHz latency-measurement blip.
 
 ### Game state & scoring
+- `manualClap()` — shared handler for spacebar and canvas tap/click: forwards to `onClap`
+  compensated by output latency only (no mic path involved).
 - `start()` — resets state, starts the click scheduler (also queues `expected` grid points
-  per measure), kicks off the draw loop.
+  per measure), kicks off the draw loop; hides the control panel.
 - `stop()` — tears everything down and returns to idle.
 - `onClap(t)` — snaps a detected clap to the nearest grid point for its measure's mode,
   computes the ms offset, claims the expected grid point, records history/EWMA, updates HUD.
