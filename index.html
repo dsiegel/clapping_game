@@ -70,6 +70,15 @@
   }
   button.stop { background: #d55; }
   button:disabled { opacity: 0.4; cursor: default; }
+  #startBtn {
+    position: fixed;
+    left: 64px;      /* clears the ☰ button */
+    right: 12px;
+    top: 12px;
+    height: 44px;
+    padding: 0;
+    z-index: 11;
+  }
   #levels { display: flex; flex-direction: column; gap: 2px; }
   .lvl {
     padding: 2px 6px;
@@ -85,7 +94,7 @@
 
   #hud {
     position: fixed;
-    top: 14px;
+    top: 68px;       /* below the Start bar */
     left: 50%;
     transform: translateX(-50%);
     z-index: 5;
@@ -113,7 +122,7 @@
   #stats { color: #999; font-size: 0.9rem; }
   #streaks {
     position: fixed;
-    top: 14px;
+    top: 68px;       /* below the Start bar */
     right: 18px;
     z-index: 5;
     text-align: right;
@@ -158,6 +167,7 @@
   <div id="bests"></div>
 
   <button id="menuBtn" aria-label="Toggle options menu">☰</button>
+  <button id="startBtn">Start</button>
 
   <div id="panel">
     <h1>👏 Clapping Game</h1>
@@ -173,7 +183,6 @@
     </div>
     <label><input type="checkbox" id="micOn" checked> Use microphone</label>
     <label>Mic sensitivity <input type="range" id="sens" min="0.01" max="0.2" step="0.005" value="0.17"></label>
-    <button id="startBtn">Start</button>
     <p id="hint">Notes cross the green line exactly on the beat — clap (or press SPACE, or tap the
     screen) so your tick lands on the note. Keep scoring green and the game levels up: first the small in-between notes disappear,
     then the beats themselves, then the mode starts switching randomly at the top of each measure

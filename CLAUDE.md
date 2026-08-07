@@ -53,10 +53,11 @@ great (within ±20 ms), or missed the note entirely.
 
 ## Layout
 
-Everything lives in `index.html`: a fullscreen `<canvas>`, a hamburger button (☰) at top
-left toggling a floating control panel (BPM, mode, levels, mic toggle, sensitivity, Start;
-the panel auto-hides on Start and reopens on Stop, and scrolls if taller than the
-viewport), a HUD overlay at top center
+Everything lives in `index.html`: a fullscreen `<canvas>`, a top bar with a hamburger
+button (☰) at the left and a Start/Stop button spanning the rest of the width, a floating
+control panel the ☰ toggles (BPM, mode, levels, mic toggle, sensitivity; auto-hides on
+Start, reopens on Stop, scrolls if taller than the viewport), a HUD overlay at top center
+just below the bar
 (current mode banner, level, verdict, offset, stats), big current-streak counters at top
 right, and a best-streaks line at bottom right just above the detection chart. Serve over localhost — `getUserMedia`
 needs a secure context (`python3 -m http.server 8123`).
