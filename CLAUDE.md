@@ -70,7 +70,9 @@ needs a secure context (`python3 -m http.server 8123`).
 - `loadWorklet()` — registers `WORKLET_CODE` via a data: URL (Chrome rejects blob: worklet
   modules on file://, so a data: URL is the one loader that works everywhere).
 - `ensureAudio()` — creates the AudioContext, opens the mic (echo cancellation/AGC off),
-  and wires mic → high-pass ×2 → clap-detector worklet.
+  and wires mic → high-pass ×2 → clap-detector worklet. In a non-secure context (no
+  `mediaDevices` API, e.g. LAN http on a phone) it unchecks the mic box and starts micless
+  instead of failing.
 - `sensFloor()` — detection floor from the slider, inverted so right = more sensitive.
 - `sendFloor()` — pushes the current floor to the worklet (live, on input).
 - `teardownAudio()` — releases the mic and closes the context (only on setup failure;
@@ -87,7 +89,7 @@ needs a secure context (`python3 -m http.server 8123`).
   compensated by output latency only (no mic path involved).
 - `start()` — resets state, starts the click scheduler (also queues `expected` grid points
   per measure), kicks off the draw loop; hides the control panel.
-- `stop()` — tears everything down and returns to idle.
+- `stop()` — tears everything down and returns to idle; reopens the control panel.
 - `onClap(t)` — snaps a detected clap to the nearest grid point for its measure's mode,
   computes the ms offset, claims the expected grid point, records history/EWMA, updates HUD.
 - `onMiss(ex)` — fires when an expected grid point passes unclaimed: HUD "MISS", red ✕,

@@ -421,8 +421,16 @@ async function ensureAudio() {
     ctx = new (window.AudioContext || window.webkitAudioContext)();
   }
   // mic off: the metronome still needs the context, but skip the whole
-  // detection chain — spacebar is the only clap input
+  // detection chain — spacebar/tap are the only clap inputs
   if (!micEl.checked || detector) return true;
+  if (!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)) {
+    // non-secure context (e.g. a phone hitting this over LAN http) has no mic
+    // API at all — fall back to micless play instead of failing Start; uncheck
+    // the box so everything keyed off it (count-in blips, warning) agrees
+    micEl.checked = false;
+    detailEl.textContent = 'no mic in this context — tap or SPACE to clap';
+    return true;
+  }
   try {
     micStream = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
