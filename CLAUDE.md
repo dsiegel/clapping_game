@@ -25,15 +25,22 @@ great (within ±20 ms), or missed the note entirely.
   sample-accurate timestamps round it out. No calibration step needed.
 - **Spacebar / tap input.** SPACE, or tapping/clicking the canvas (mobile), always registers
   as a clap while playing (compensated by output latency only — a manual input never crosses
-  the mic path). A "Use microphone" checkbox in the panel disables the mic entirely:
+  the mic path). On a phone the finger's thump also reaches the mic, so mic detections are
+  held 80 ms and dropped if a manual input landed within [−50, +250] ms of them (the hold
+  covers touch events dispatching after the sound arrives) — no double claps, no polluted
+  calibration. A "Use microphone" checkbox in the panel disables the mic entirely:
   unchecked at Start, `getUserMedia` is skipped (no permission prompt, no calibration blips
   or count-in warning); unchecked mid-game, mic detections are ignored live while
   spacebar/tap keep working.
 - **Latency compensation.** Count-in clicks carry an extra 6 kHz blip that passes the
   detector's high-pass, so the app hears its own clicks through the mic and measures true
-  round-trip latency (median of detected − scheduled). Scoring subtracts that from each
-  detection; if no blip comes back (headphones), it falls back to the browser's reported
-  output + mic input latency. The detection chart legend shows the value and its source.
+  round-trip latency (detected − scheduled). Since the blip repeats at a constant delay,
+  only the tightest cluster of ≥2 samples within 20 ms counts — stray noise scatters and is
+  ignored. Scoring subtracts the measurement from each detection; with no valid cluster
+  (headphones), it falls back to the browser's reported output + mic input latency. The
+  detection chart legend shows the value, its source, and the agreeing-sample count. iOS can
+  interrupt the AudioContext when the mic opens (frozen clock = count-in warning stuck
+  forever), so the context auto-resumes on state changes mid-game and before scheduling.
 - **DDR-style falling lane.** Fullscreen canvas; notes fall from the top and cross the target
   line at the screen's vertical midpoint exactly on the beat. Claps drop colored ticks into
   the same stream, misses drop red ✕ marks, so relative timing is directly visible.
@@ -73,7 +80,13 @@ needs a secure context (`python3 -m http.server 8123`).
 - `ensureAudio()` — creates the AudioContext, opens the mic (echo cancellation/AGC off),
   and wires mic → high-pass ×2 → clap-detector worklet. In a non-secure context (no
   `mediaDevices` API, e.g. LAN http on a phone) it unchecks the mic box and starts micless
-  instead of failing.
+  instead of failing. Auto-resumes the context if it leaves 'running' mid-game (iOS
+  interrupts it when the mic opens).
+- `onMicClap(t)` — routes a detection (after the 80 ms tap-dedupe hold): drops it if a
+  manual input landed nearby, banks it as a latency sample during the count-in, else scores
+  it via `onClap`.
+- `updateMeasuredLat()` — sets `measuredLat` from the tightest cluster of ≥2 latency
+  samples within 20 ms (blips repeat at a constant delay; noise scatters and is ignored).
 - `sensFloor()` — detection floor from the slider, inverted so right = more sensitive.
 - `sendFloor()` — pushes the current floor to the worklet (live, on input).
 - `teardownAudio()` — releases the mic and closes the context (only on setup failure;
@@ -86,8 +99,9 @@ needs a secure context (`python3 -m http.server 8123`).
   the 3 kHz high-pass). `bright` (count-in only) adds the 6 kHz latency-measurement blip.
 
 ### Game state & scoring
-- `manualClap()` — shared handler for spacebar and canvas tap/click: forwards to `onClap`
-  compensated by output latency only (no mic path involved).
+- `manualClap()` — shared handler for spacebar and canvas tap/click: records the input time
+  (so `onMicClap` can drop the tap's acoustic thump) and forwards to `onClap` compensated by
+  output latency only (no mic path involved).
 - `start()` — resets state, starts the click scheduler (also queues `expected` grid points
   per measure), kicks off the draw loop; hides the control panel.
 - `stop()` — tears everything down and returns to idle; reopens the control panel.

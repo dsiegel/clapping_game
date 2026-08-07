@@ -187,15 +187,17 @@
     screen) so your tick lands on the note. Keep scoring green and the game levels up: first the small in-between notes disappear,
     then the beats themselves, then the mode starts switching randomly at the top of each measure
     (watch the banner). Slip up and you drop a level. If claps aren't registering, drag
-    sensitivity right. First 4 beats are a count-in — stay quiet during it: the app listens to
-    its own clicks to measure your audio latency. Green = within ±50 ms, gold = within ±20 ms.</p>
+    sensitivity right. First 4 beats are a count-in — stay quiet during it (no clapping or
+    tapping): the app listens to its own clicks to measure your audio latency. Green = within ±50 ms, gold = within ±20 ms.</p>
   </div>
 
 <script>
 let ctx, micStream, detector;
 let micLatency = 0;      // input latency reported by the mic track, seconds
 let latSamples = [];     // count-in loopback measurements of true round-trip latency
-let measuredLat = null;  // median of latSamples; overrides the browser's estimates
+let measuredLat = null;  // consensus of latSamples; overrides the browser's estimates
+let latN = 0;            // how many samples agreed on measuredLat (shown in the legend)
+let tapTimes = [];       // recent manual-input times: a tap's thump in the mic must not double-count
 let state = 'idle';      // 'idle' | 'playing'
 let startAt = 0;         // audioContext time of the first count-in beat
 let t0 = 0;              // audioContext time of beat "1" after count-in
@@ -276,6 +278,11 @@ menuBtn.onclick = () => panelEl.classList.toggle('hidden');
 // (a manual input never crosses the mic)
 function manualClap() {
   if (state !== 'playing') return;
+  // record the tap even during the count-in (onClap discards it there, but the
+  // finger's physical thump still reaches the mic and must be recognized as a
+  // tap, not a latency sample)
+  tapTimes.push(ctx.currentTime);
+  if (tapTimes.length > 32) tapTimes.shift();
   onClap(ctx.currentTime - (ctx.outputLatency || ctx.baseLatency || 0));
 }
 
@@ -424,10 +431,19 @@ async function loadWorklet() {
 async function ensureAudio() {
   if (ctx && ctx.state !== 'closed') {
     // reuse the existing context + graph (stop() only suspends, so Start never
-    // has to re-request mic permission within a page load)
-    if (ctx.state === 'suspended') await ctx.resume();
+    // has to re-request mic permission within a page load); != 'running' also
+    // catches Safari's non-standard 'interrupted' state
+    if (ctx.state !== 'running') await ctx.resume();
   } else {
     ctx = new (window.AudioContext || window.webkitAudioContext)();
+    // iOS interrupts the context when the mic flips the audio session to
+    // play-and-record (currentTime freezes, clicks go silent, the count-in
+    // warning sticks forever); stop() suspends on purpose, so only auto-resume
+    // mid-game
+    ctx.onstatechange = () => {
+      if (state === 'playing' && ctx && ctx.state !== 'running' && ctx.state !== 'closed')
+        ctx.resume().catch(() => {});
+    };
   }
   // mic off: the metronome still needs the context, but skip the whole
   // detection chain — spacebar/tap are the only clap inputs
@@ -468,25 +484,55 @@ async function ensureAudio() {
     const m = e.data;
     if (m.type !== 'clap') { detLevels.push(m); return; }
     detTicks.push(m.t);
-    if (state !== 'playing' || !micEl.checked) return;
-    // a detection shortly after a count-in beat is the app's own bright blip
-    // arriving back through the mic: detected − scheduled = round-trip latency
-    const k = Math.round((m.t - startAt) / beatDur);
-    const d = m.t - (startAt + k * beatDur);
-    if (k >= 0 && k < countInBeats && d >= 0 && d <= Math.min(0.3, beatDur * 0.6)) {
-      latSamples.push(d);
-      const s = [...latSamples].sort((a, b) => a - b);
-      measuredLat = s[s.length >> 1];
-    } else {
-      // the player claps against what they HEAR (delayed by output latency) and
-      // the mic stamps it late by its input latency — remove both from scoring
-      onClap(m.t - effLat());
-    }
+    // hold each detection briefly before scoring: on a phone the tap's thump
+    // can reach the mic before the pointerdown event dispatches, and the
+    // dedupe in onMicClap needs the tap recorded first (m.t is sample-accurate,
+    // so deferring the processing doesn't move the scored time)
+    setTimeout(() => onMicClap(m.t), 80);
   };
   src.connect(hp1).connect(hp2).connect(detector);
   detector.connect(mute).connect(ctx.destination); // keeps the node pulled; outputs silence
   sendFloor();
   return true;
+}
+
+// a mic detection while playing is one of three things: a screen tap's thump
+// (already scored via pointerdown — drop it), the count-in blip coming back
+// (a latency sample), or an actual clap
+function onMicClap(t) {
+  if (state !== 'playing' || !micEl.checked) return;
+  // a tap lands centimeters from the phone's mic, so its acoustic shadow shows
+  // up as a detection; the window is two-sided because touch-event latency and
+  // mic input latency are comparable — either one can be stamped first
+  if (tapTimes.some(tt => t - tt >= -0.05 && t - tt <= 0.25)) return;
+  // a detection shortly after a count-in beat is the app's own bright blip
+  // arriving back through the mic: detected − scheduled = round-trip latency
+  const k = Math.round((t - startAt) / beatDur);
+  const d = t - (startAt + k * beatDur);
+  if (k >= 0 && k < countInBeats && d >= 0 && d <= Math.min(0.4, beatDur * 0.6)) {
+    latSamples.push(d);
+    updateMeasuredLat();
+  } else {
+    // the player claps against what they HEAR (delayed by output latency) and
+    // the mic stamps it late by its input latency — remove both from scoring
+    onClap(t - effLat());
+  }
+}
+
+// The blip repeats at the same round-trip delay on every count-in beat, so
+// real samples land within a few ms of each other while stray noise (a tap's
+// thump, a cough) scatters across the window. Accept only the tightest cluster
+// of ≥2 mutually consistent samples; if none forms, measuredLat stays null and
+// scoring falls back to the browser's estimate, honestly labeled "estimated".
+function updateMeasuredLat() {
+  const s = [...latSamples].sort((a, b) => a - b);
+  let best = null;
+  for (let i = 0; i < s.length; i++) {
+    let j = i;
+    while (j + 1 < s.length && s[j + 1] - s[i] <= 0.02) j++;
+    if (!best || j - i + 1 > best.n) best = { n: j - i + 1, med: s[i + ((j - i) >> 1)] };
+  }
+  if (best && best.n >= 2) { measuredLat = best.med; latN = best.n; }
 }
 
 // the slider reads the intuitive way (right = more sensitive), so invert it to
@@ -550,8 +596,13 @@ function click(time, accent, bright) {
 async function start() {
   startBtn.disabled = true;      // mic setup is async; block re-clicks until it settles
   const ok = await ensureAudio();
+  if (!ok) { startBtn.disabled = false; return; }
+  // opening the mic may have interrupted the context (iOS route change) —
+  // make sure the clock is actually running before scheduling against it
+  if (ctx.state !== 'running') await ctx.resume().catch(() => {});
+  // re-enable only after the last await: a double-tap on Start must not find
+  // state still 'idle' and launch a second scheduler
   startBtn.disabled = false;
-  if (!ok) return;
 
   beatDur = 60 / (+document.getElementById('bpm').value || 57);
   offsets = [];
@@ -564,6 +615,8 @@ async function start() {
   detTicks = [];
   latSamples = [];
   measuredLat = null;
+  latN = 0;
+  tapTimes = [];
   recent = [];
   graceLeft = 0;
   randModes = [];
@@ -722,8 +775,10 @@ function drawViz() {
   const timeToY = t => midY + (now - t) * pps;
   const mDur = measDur();
 
-  // an expected grid point more than half a grid in the past can no longer be claimed
-  while (expected.length && expected[0].time + expected[0].grid / 2 < now) {
+  // an expected grid point more than half a grid in the past can no longer be
+  // claimed — but a mic clap's claim arrives late by the round-trip latency
+  // plus the tap-dedupe hold, so give it 250 ms of slack before calling a miss
+  while (expected.length && expected[0].time + expected[0].grid / 2 + 0.25 < now) {
     const ex = expected.shift();
     if (!ex.hit) onMiss(ex);
   }
@@ -835,7 +890,7 @@ function drawViz() {
     g2.fillText('🤫 QUIET! CALIBRATING!', cx, yWarn);
     g2.fillStyle = 'rgba(255, 210, 60, 0.75)';
     g2.font = '16px sans-serif';
-    g2.fillText('measuring your audio latency from the count-in clicks — don’t clap yet', cx, yWarn + 42);
+    g2.fillText('measuring your audio latency from the count-in clicks — don’t clap or tap yet', cx, yWarn + 42);
   }
 
   drawChart(now);
@@ -918,7 +973,7 @@ function drawDetChart(now) {
   let lx = left + 6;
   for (const [label, color] of
        [['mic peak', '#ccc'], ['env ×4', '#fa5'], ['floor', '#5af'], ['detected', '#2d7'],
-        [`lat −${(effLat() * 1000).toFixed(0)} ms (${measuredLat !== null ? 'measured' : 'estimated'})`, '#777']]) {
+        [`lat −${(effLat() * 1000).toFixed(0)} ms (${measuredLat !== null ? 'measured ×' + latN : 'estimated'})`, '#777']]) {
     g2.fillStyle = color;
     g2.fillText(label, lx, top + 4);
     lx += g2.measureText(label).width + 14;
